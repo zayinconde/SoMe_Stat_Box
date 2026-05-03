@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdio.h>
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -22,12 +23,12 @@
  */
 #define TFT_BL_GPIO (-1)
 
-#define TFT_WIDTH 76
-#define TFT_HEIGHT 284
+#define TFT_WIDTH 284
+#define TFT_HEIGHT 76
 
-#define TFT_X_OFFSET 82
-#define TFT_Y_OFFSET 18
-#define TFT_MADCTL 0x00
+#define TFT_X_OFFSET 18
+#define TFT_Y_OFFSET 82
+#define TFT_MADCTL 0x60
 
 #define ST7789_SWRESET 0x01
 #define ST7789_SLPOUT 0x11
@@ -50,9 +51,35 @@
 #define COLOR_CYAN 0x07FF
 #define COLOR_MAGENTA 0xF81F
 #define COLOR_ORANGE 0xFD20
+#define COLOR_TIKTOK_CYAN 0x067F
+#define COLOR_TIKTOK_PINK 0xF81B
+#define COLOR_DARK_GRAY 0x1082
 
-static const char *TAG = "display_test";
+static const char *TAG = "stat_box";
 static spi_device_handle_t s_tft;
+
+static const uint8_t s_font_5x7[][5] = {
+    ['0'] = {0x3E, 0x51, 0x49, 0x45, 0x3E},
+    ['1'] = {0x00, 0x42, 0x7F, 0x40, 0x00},
+    ['2'] = {0x42, 0x61, 0x51, 0x49, 0x46},
+    ['3'] = {0x21, 0x41, 0x45, 0x4B, 0x31},
+    ['4'] = {0x18, 0x14, 0x12, 0x7F, 0x10},
+    ['5'] = {0x27, 0x45, 0x45, 0x45, 0x39},
+    ['6'] = {0x3C, 0x4A, 0x49, 0x49, 0x30},
+    ['7'] = {0x01, 0x71, 0x09, 0x05, 0x03},
+    ['8'] = {0x36, 0x49, 0x49, 0x49, 0x36},
+    ['9'] = {0x06, 0x49, 0x49, 0x29, 0x1E},
+    ['E'] = {0x7F, 0x49, 0x49, 0x49, 0x41},
+    ['F'] = {0x7F, 0x09, 0x09, 0x09, 0x01},
+    ['K'] = {0x7F, 0x08, 0x14, 0x22, 0x41},
+    ['L'] = {0x7F, 0x40, 0x40, 0x40, 0x40},
+    ['M'] = {0x7F, 0x02, 0x0C, 0x02, 0x7F},
+    ['O'] = {0x3E, 0x41, 0x41, 0x41, 0x3E},
+    ['R'] = {0x7F, 0x09, 0x19, 0x29, 0x46},
+    ['S'] = {0x46, 0x49, 0x49, 0x49, 0x31},
+    ['W'] = {0x7F, 0x20, 0x18, 0x20, 0x7F},
+    ['.'] = {0x00, 0x60, 0x60, 0x00, 0x00},
+};
 
 static uint16_t rgb565_be(uint16_t color)
 {
@@ -138,6 +165,124 @@ static esp_err_t tft_fill_rect(int x, int y, int width, int height, uint16_t col
     return ESP_OK;
 }
 
+static void tft_fill_rect_clipped(int x, int y, int width, int height, uint16_t color)
+{
+    if (x < 0) {
+        width += x;
+        x = 0;
+    }
+    if (y < 0) {
+        height += y;
+        y = 0;
+    }
+    if (x + width > TFT_WIDTH) {
+        width = TFT_WIDTH - x;
+    }
+    if (y + height > TFT_HEIGHT) {
+        height = TFT_HEIGHT - y;
+    }
+    if (width > 0 && height > 0) {
+        ESP_ERROR_CHECK(tft_fill_rect(x, y, width, height, color));
+    }
+}
+
+static void draw_filled_circle(int cx, int cy, int radius, uint16_t color)
+{
+    for (int y = -radius; y <= radius; y++) {
+        for (int x = -radius; x <= radius; x++) {
+            if (x * x + y * y <= radius * radius) {
+                tft_fill_rect_clipped(cx + x, cy + y, 1, 1, color);
+            }
+        }
+    }
+}
+
+static void draw_text_5x7(const char *text, int x, int y, int scale, uint16_t color)
+{
+    while (*text != '\0') {
+        const unsigned char ch = (unsigned char)*text++;
+
+        if (ch == ' ') {
+            x += 4 * scale;
+            continue;
+        }
+
+        const uint8_t *glyph = s_font_5x7[ch];
+        for (int col = 0; col < 5; col++) {
+            for (int row = 0; row < 7; row++) {
+                if ((glyph[col] & (1U << row)) != 0) {
+                    tft_fill_rect_clipped(x + col * scale, y + row * scale, scale, scale, color);
+                }
+            }
+        }
+
+        x += 6 * scale;
+    }
+}
+
+static void draw_tiktok_note_layer(int x, int y, int offset_x, int offset_y, uint16_t color)
+{
+    const int ox = x + offset_x;
+    const int oy = y + offset_y;
+
+    tft_fill_rect_clipped(ox + 19, oy + 3, 8, 48, color);
+    tft_fill_rect_clipped(ox + 27, oy + 10, 18, 7, color);
+    tft_fill_rect_clipped(ox + 38, oy + 15, 7, 10, color);
+    draw_filled_circle(ox + 14, oy + 52, 12, color);
+    tft_fill_rect_clipped(ox + 14, oy + 40, 13, 15, color);
+}
+
+static void draw_tiktok_logo(int x, int y)
+{
+    draw_tiktok_note_layer(x, y, -4, 4, COLOR_TIKTOK_CYAN);
+    draw_tiktok_note_layer(x, y, 4, -4, COLOR_TIKTOK_PINK);
+    draw_tiktok_note_layer(x, y, 0, 0, COLOR_WHITE);
+}
+
+static void draw_tiktok_frame(void)
+{
+    ESP_ERROR_CHECK(tft_fill_rect(0, 0, TFT_WIDTH, TFT_HEIGHT, COLOR_BLACK));
+
+    tft_fill_rect_clipped(0, 0, 6, TFT_HEIGHT, COLOR_TIKTOK_CYAN);
+    tft_fill_rect_clipped(TFT_WIDTH - 6, 0, 6, TFT_HEIGHT, COLOR_TIKTOK_PINK);
+    draw_tiktok_logo(19, 7);
+    draw_text_5x7("FOLLOWERS", 96, 42, 1, COLOR_DARK_GRAY);
+    tft_fill_rect_clipped(80, 64, 184, 3, COLOR_DARK_GRAY);
+}
+
+static void format_followers(char *buffer, size_t buffer_size, int value)
+{
+    if (value >= 1000) {
+        snprintf(buffer, buffer_size, "%d.%03d", value / 1000, value % 1000);
+    } else {
+        snprintf(buffer, buffer_size, "%d", value);
+    }
+}
+
+static void draw_tiktok_values(int followers, int likes)
+{
+    static char previous_follower_text[12] = "";
+    static char previous_like_text[8] = "";
+    char follower_text[12];
+    char like_text[8];
+
+    format_followers(follower_text, sizeof(follower_text), followers);
+    snprintf(like_text, sizeof(like_text), "%d", likes);
+
+    if (previous_follower_text[0] != '\0') {
+        draw_text_5x7(previous_follower_text, 92, 13, 3, COLOR_BLACK);
+    }
+    if (previous_like_text[0] != '\0') {
+        draw_text_5x7(previous_like_text, 214, 22, 2, COLOR_BLACK);
+    }
+
+    draw_text_5x7(follower_text, 92, 13, 3, COLOR_WHITE);
+    draw_text_5x7(like_text, 214, 22, 2, COLOR_WHITE);
+
+    snprintf(previous_follower_text, sizeof(previous_follower_text), "%s", follower_text);
+    snprintf(previous_like_text, sizeof(previous_like_text), "%s", like_text);
+}
+
 static esp_err_t tft_init_panel(void)
 {
     const uint8_t color_mode = 0x55; /* 16-bit RGB565. */
@@ -200,48 +345,31 @@ static esp_err_t tft_bus_init(void)
     return spi_bus_add_device(TFT_HOST, &device_config, &s_tft);
 }
 
-static void draw_display_test_pattern(void)
-{
-    const uint16_t bars[] = {
-        COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_YELLOW,
-        COLOR_CYAN, COLOR_MAGENTA, COLOR_WHITE,
-    };
-    const int bar_count = sizeof(bars) / sizeof(bars[0]);
-    const int bar_height = TFT_HEIGHT / bar_count;
-
-    for (int i = 0; i < bar_count; i++) {
-        const int y = i * bar_height;
-        const int height = (i == bar_count - 1) ? TFT_HEIGHT - y : bar_height;
-        ESP_ERROR_CHECK(tft_fill_rect(0, y, TFT_WIDTH, height, bars[i]));
-    }
-
-    ESP_ERROR_CHECK(tft_fill_rect(0, 0, TFT_WIDTH, 4, COLOR_WHITE));
-    ESP_ERROR_CHECK(tft_fill_rect(0, TFT_HEIGHT - 4, TFT_WIDTH, 4, COLOR_WHITE));
-    ESP_ERROR_CHECK(tft_fill_rect(0, 0, 4, TFT_HEIGHT, COLOR_WHITE));
-    ESP_ERROR_CHECK(tft_fill_rect(TFT_WIDTH - 4, 0, 4, TFT_HEIGHT, COLOR_WHITE));
-}
-
-static void display_test_task(void *arg)
+static void stat_box_task(void *arg)
 {
     (void)arg;
 
-    const uint16_t full_screen_colors[] = {
-        COLOR_RED, COLOR_GREEN, COLOR_BLUE, COLOR_BLACK,
-    };
-    const int color_count = sizeof(full_screen_colors) / sizeof(full_screen_colors[0]);
-    int color_index = 0;
-
-    ESP_LOGI(TAG, "Display test running with box 10 settings: x=%d y=%d madctl=0x%02x",
+    ESP_LOGI(TAG, "TikTok example screen running with box 10 settings: x=%d y=%d madctl=0x%02x",
              TFT_X_OFFSET, TFT_Y_OFFSET, TFT_MADCTL);
+    draw_tiktok_frame();
+
+    int followers = 3754;
+    int likes = 204;
 
     while (true) {
-        ESP_ERROR_CHECK(tft_fill_rect(0, 0, TFT_WIDTH, TFT_HEIGHT, full_screen_colors[color_index]));
-        vTaskDelay(pdMS_TO_TICKS(1200));
+        draw_tiktok_values(followers, likes);
 
-        draw_display_test_pattern();
-        vTaskDelay(pdMS_TO_TICKS(2500));
+        followers += 37;
+        if (followers > 99900) {
+            followers = 3754;
+        }
 
-        color_index = (color_index + 1) % color_count;
+        likes += 7;
+        if (likes > 999) {
+            likes = 204;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -250,7 +378,7 @@ void app_main(void)
     ESP_ERROR_CHECK(tft_bus_init());
     ESP_ERROR_CHECK(tft_init_panel());
 
-    ESP_LOGI(TAG, "ST7789 test started: %dx%d, offsets x=%d y=%d", TFT_WIDTH, TFT_HEIGHT,
+    ESP_LOGI(TAG, "ST7789 stat box started: %dx%d, offsets x=%d y=%d", TFT_WIDTH, TFT_HEIGHT,
              TFT_X_OFFSET, TFT_Y_OFFSET);
-    xTaskCreate(display_test_task, "display_test", 4096, NULL, 5, NULL);
+    xTaskCreate(stat_box_task, "stat_box", 4096, NULL, 5, NULL);
 }
